@@ -22,22 +22,12 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 
 pub mod banker;
+mod database;
 pub mod event;
 pub mod hacksteader;
 pub mod market;
 
 use hacksteader::Hacksteader;
-
-pub fn dyn_db() -> DynamoDbClient {
-    DynamoDbClient::new(if *LOCAL_DB {
-        rusoto_core::Region::Custom {
-            name: "local".to_string(),
-            endpoint: "http://localhost:8000".to_string(),
-        }
-    } else {
-        rusoto_core::Region::UsEast1
-    })
-}
 
 const FARM_CYCLE_SECS: u64 = 5;
 const FARM_CYCLE_MILLIS: u64 = FARM_CYCLE_SECS * 1000;

@@ -4,22 +4,39 @@ use hcor::possess;
 use hcor::{AttributeParseError, Category, Item, Key, Profile, TABLE_NAME};
 use log::*;
 use possess::{Possessed, Possession};
-use rusoto_core::RusotoError;
+// use rusoto_core::RusotoError;
 use rusoto_dynamodb::{AttributeValue, DynamoDb, DynamoDbClient, PutItemError};
 use std::time::SystemTime;
+use tokio_postgres::{Client, Error, NoTls};
 
-pub async fn exists(db: &DynamoDbClient, user_id: String) -> bool {
-    db.get_item(rusoto_dynamodb::GetItemInput {
-        key: Profile::key_item(user_id),
-        table_name: TABLE_NAME.to_string(),
-        ..Default::default()
-    })
-    .await
-    .map(|x| x.item.is_some())
-    .unwrap_or_else(|e| {
-        error!("couldn't see if hacksteader exists: {}", e);
-        false
-    })
+pub async fn exists(db: &Client, user_id: String) -> bool {
+    // db.get_item(rusoto_dynamodb::GetItemInput {
+    //     key: Profile::key_item(user_id),
+    //     table_name: TABLE_NAME.to_string(),
+    //     ..Default::default()
+    // })
+    // .await
+    // .map(|x| x.item.is_some())
+    // .unwrap_or_else(|e| {
+    //     error!("couldn't see if hacksteader exists: {}", e);
+    //     false
+    // });
+
+    let data = db
+        .query(
+            "SELECT * FROM $1 WHERE key=$2",
+            &[&TABLE_NAME.to_string(), &Profile::key_item(user_id)],
+        )
+        .await
+        .unwrap();
+
+    data[0]
+        .get(1)
+        .map(|x| x.item.is_some())
+        .unwrap_or_else(|e| {
+            error!("couldnt see if hacksteader exists: {}", e);
+            false
+        })
 }
 
 pub async fn get_possession(db: &DynamoDbClient, key: Key) -> Result<Possession, String> {
@@ -143,6 +160,7 @@ pub struct Tile {
     pub id: uuid::Uuid,
     pub steader: String,
 }
+
 impl Tile {
     pub fn new(steader: String) -> Tile {
         Tile {
@@ -369,6 +387,7 @@ impl std::ops::Deref for Plant {
             .expect("invalid archetype handle")
     }
 }
+
 impl Craft {
     pub fn from_av(av: &AttributeValue) -> Result<Self, AttributeParseError> {
         use AttributeParseError::*;
@@ -679,6 +698,7 @@ pub struct NeighborBonuses(
         (config::PlantAdvancement, config::PlantAdvancementKind),
     )>,
 );
+
 impl NeighborBonuses {
     pub fn bonuses_for_plant(
         self,
@@ -711,32 +731,29 @@ pub struct Hacksteader {
     pub inventory: Vec<Possession>,
     pub gotchis: Vec<Possessed<possess::Gotchi>>,
 }
-impl Hacksteader {
-    pub async fn new_in_db(db: &DynamoDbClient, user_id: String) -> Result<(), String> {
-        // just give them a profile for now
-        db.batch_write_item(rusoto_dynamodb::BatchWriteItemInput {
-            request_items: [(
-                TABLE_NAME.to_string(),
-                vec![
-                    Profile::new(user_id.clone()).item(),
-                    Tile::new(user_id.clone()).into_av().m.unwrap(),
-                ]
-                .into_iter()
-                .map(|item| rusoto_dynamodb::WriteRequest {
-                    put_request: Some(rusoto_dynamodb::PutRequest { item }),
-                    ..Default::default()
-                })
-                .collect(),
-            )]
-            .iter()
-            .cloned()
-            .collect(),
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| format!("couldn't add profile: {}", e))?;
 
-        Ok(())
+impl Hacksteader {
+    pub async fn new_in_db(db: &Client, user_id: String) -> Result<(), String> {
+        // just give them a profile for now
+        db.query(
+            "INSERT INTO $1 (key, value) VALUES ($2, $3)",
+            &[
+                &TABLE_NAME.to_string(),
+                &Profile::new(user_id.clone()).item(),
+                &Tile::new(user_id.clone()).into_av().m.unwrap(),
+            ],
+        )
+        .await?;
+        db.query(
+            "SELECT * FROM $1 WHERE key=$2",
+            &[
+                &TABLE_NAME.to_string(),
+                &Profile::new(user_id.clone()).item(),
+            ],
+        )
+        .await
+        .unwrap()[0]
+            .get(1)
     }
 
     pub fn neighbor_bonuses(&self) -> NeighborBonuses {
@@ -795,7 +812,7 @@ impl Hacksteader {
     }
 
     pub async fn give_possession(
-        db: &DynamoDbClient,
+        db: &Client,
         user_id: String,
         possession: &Possession,
     ) -> Result<(), RusotoError<PutItemError>> {
@@ -807,7 +824,9 @@ impl Hacksteader {
             ..Default::default()
         })
         .await
-        .map(|_| ())
+        .map(|_| ());
+
+        db.prepare("INSERT INTO $1 (key, value) VALUES ($2, $3) ON CONFLICT (key) UPDATE value = EXCLUDED.value");
     }
 
     pub async fn spawn_possession(
